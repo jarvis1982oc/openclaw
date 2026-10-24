@@ -357,6 +357,7 @@ export type SessionTranscriptWorkerInput =
 
 /** Only the dispatch owner attaches live physical proof; caller-prepared inputs cannot supply it. */
 export type SessionTranscriptWorkerRequest = SessionTranscriptWorkerInput & {
+  contextDiagnosticRequest?: string;
   validation?: OpenClawAgentDatabaseReadValidation;
   projectionReceipt?: SessionTranscriptProjectionReceipt;
 };

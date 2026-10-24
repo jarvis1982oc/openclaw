@@ -10,6 +10,7 @@ import type {
   UsageCostWorkerInput,
   UsageCostWorkerReply,
 } from "../../infra/session-cost-usage-worker.types.js";
+import { bindContextDiagnosticRequest } from "../../infra/transcript-context-diagnostic.js";
 import { serveOwnedWorkerTasks } from "../../infra/worker-task-server.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import type { SessionIdentityEvidenceResult } from "./session-accessor.sqlite-entry-availability.js";
@@ -655,7 +656,7 @@ serveOwnedWorkerTasks(
     try {
       // Database-addressed reads share one custody and reply boundary; discovery and exports
       // retain their existing owners. The scope opens no connection until a reader asks for it.
-      return "database" in request
+      const reply = "database" in request
         ? await withHistoryDatabase(
             request.database,
             request.kind === "history-page"
@@ -666,10 +667,15 @@ serveOwnedWorkerTasks(
             () => withSessionTranscriptProjectionReceipt(request.projectionReceipt, readRequest),
             request.validation,
           )
-        : { ok: true, value: await readRequest() };
+        : { ok: true as const, value: await readRequest() };
+      if (!reply.ok) {
+        bindContextDiagnosticRequest(reply.error, request.contextDiagnosticRequest);
+      }
+      return reply;
     } catch (error) {
       const encoded = encodeSessionTranscriptRequestError(error, request);
       if (encoded) {
+        bindContextDiagnosticRequest(encoded, request.contextDiagnosticRequest);
         return { ok: false, error: encoded };
       }
       throw error;

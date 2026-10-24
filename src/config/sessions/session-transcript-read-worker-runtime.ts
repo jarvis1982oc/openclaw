@@ -10,6 +10,10 @@ import {
   resolveWorkerPoolSize,
   SESSION_TRANSCRIPT_FOREGROUND_WORKERS,
 } from "../../infra/worker-pool-sizing.js";
+import {
+  acceptContextDiagnosticReply,
+  createContextDiagnosticRequest,
+} from "../../infra/transcript-context-diagnostic.js";
 import { WorkerTaskPool } from "../../infra/worker-task-pool.js";
 import type { WorkerTaskOptions } from "../../infra/worker-task-pool.types.js";
 import type { readSessionTranscriptModelContext } from "./session-accessor.sqlite-model-context.js";
@@ -78,6 +82,7 @@ export function createSessionTranscriptReadPool<Input extends SessionTranscriptW
     ) {
       // Register before admission yields; cleanup also owns reads waiting to dispatch.
       const resources = new Set<HistoryDatabaseResource>();
+      const contextDiagnosticRequest = createContextDiagnosticRequest();
       historyClearTimeout(lane.idleTimer);
       lane.pending++;
       refreshDatabaseWorkerPressureSubscription();
@@ -89,7 +94,7 @@ export function createSessionTranscriptReadPool<Input extends SessionTranscriptW
             resource.pending++;
           }
         }
-        return await runWithSqliteDatabaseAdmissionTurn(
+        const reply = await runWithSqliteDatabaseAdmissionTurn(
           databases.admissionPaths,
           () =>
             lane.pool.run(() => {
@@ -103,10 +108,14 @@ export function createSessionTranscriptReadPool<Input extends SessionTranscriptW
               for (const resource of resources) {
                 resource.nativeLanes.add(lane);
               }
-              return input;
+              return { ...input, contextDiagnosticRequest };
             }, options),
           databases.families,
         );
+        if (!reply.ok) {
+          acceptContextDiagnosticReply(reply.error, contextDiagnosticRequest);
+        }
+        return reply;
       } finally {
         for (const resource of resources) {
           resource.pending--;
