@@ -33,6 +33,7 @@ import {
   type ContextDiagnosticPhase,
 } from "../../infra/transcript-context-diagnostic.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { isExpectedRunCancellation } from "../../process/expected-run-cancellation.js";
 import {
   getGatewayRestartDrainSignal,
   runWithGatewayDetachedWorkAdmission,
@@ -118,9 +119,13 @@ export async function runSkillExperienceReview(
       "skills:experience-review",
     );
   } catch (error) {
-    recordContextDiagnostic(error, candidate.source, diagnostic.phase, (detail) =>
-      contextDiagnosticLog.warn("skill experience review context diagnostic", detail),
-    );
+    recordContextDiagnostic(error, candidate.source, diagnostic.phase, (detail) => {
+      if (isExpectedRunCancellation(error)) {
+        contextDiagnosticLog.debug("skill experience review context diagnostic", detail);
+      } else {
+        contextDiagnosticLog.warn("skill experience review context diagnostic", detail);
+      }
+    });
     throw error;
   }
 }

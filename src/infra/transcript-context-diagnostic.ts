@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 
 export type ContextDiagnosticReason = "transcript-index-unready" | "anchor-mismatch";
 export type ContextDiagnosticStage =
@@ -139,73 +139,24 @@ export function serializeContextDiagnostic(error: unknown): ContextDiagnostic | 
   return objectRecord(error) ? details.get(error) : undefined;
 }
 
-/** Diagnostic-only request binding; never a grant of source or execution authority. */
-export function createContextDiagnosticRequest(): string | undefined {
-  try {
-    return randomBytes(16).toString("hex");
-  } catch {
-    return undefined;
-  }
-}
-
-/** The domain worker binds already-produced detail to this request before transport. */
-export function bindContextDiagnosticRequest(envelope: unknown, requestToken?: string): void {
-  try {
-    if (!contextFenceEnvelope(envelope) || !requestToken || !/^[a-f0-9]{32}$/.test(requestToken)) {
-      return;
-    }
-    const detail = validated(Object.getOwnPropertyDescriptor(envelope, "contextDiagnostic")?.value);
-    if (detail) {
-      Object.defineProperty(envelope, "contextDiagnostic", {
-        value: { ...detail, requestToken },
-        enumerable: true,
-        configurable: true,
-        writable: true,
-      });
-    }
-  } catch {
-    // Binding failure drops diagnostic detail, not the original refusal.
-  }
-}
-
-/** Missing, stale or malformed task metadata stays an ordinary domain failure. */
-export function acceptContextDiagnosticReply(envelope: unknown, expectedToken?: string): void {
+/**
+ * Retain validated detail only after the ordinary pool has correlated its task reply.
+ * The separate held-lock execution-reader path does not opt into this adapter.
+ */
+export function retainContextDiagnosticReply(envelope: unknown): void {
   try {
     if (objectRecord(envelope)) {
       details.delete(envelope);
     }
-    if (
-      !contextFenceEnvelope(envelope) ||
-      !expectedToken ||
-      !/^[a-f0-9]{32}$/.test(expectedToken)
-    ) {
+    if (!contextFenceEnvelope(envelope)) {
       return;
     }
-    const wire = Object.getOwnPropertyDescriptor(envelope, "contextDiagnostic")?.value;
-    if (
-      !objectRecord(wire) ||
-      Object.getPrototypeOf(wire) !== Object.prototype ||
-      Reflect.ownKeys(wire).some((key) => typeof key !== "string") ||
-      Object.getOwnPropertyNames(wire).toSorted().join(",") !==
-        "reason,requestToken,sourceToken,stage,version" ||
-      Object.values(Object.getOwnPropertyDescriptors(wire)).some(
-        (descriptor) => !Object.hasOwn(descriptor, "value"),
-      ) ||
-      wire.requestToken !== expectedToken
-    ) {
-      return;
-    }
-    const detail = validated({
-      version: wire.version,
-      reason: wire.reason,
-      stage: wire.stage,
-      sourceToken: wire.sourceToken,
-    });
+    const detail = validated(Object.getOwnPropertyDescriptor(envelope, "contextDiagnostic")?.value);
     if (detail) {
       details.set(envelope, detail);
     }
   } catch {
-    // Accessors and malformed payloads never replace the original refusal.
+    // Optional malformed metadata never replaces the original refusal.
   }
 }
 

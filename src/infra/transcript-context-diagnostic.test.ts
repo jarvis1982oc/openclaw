@@ -5,12 +5,11 @@ import {
 } from "../config/sessions/session-history-worker-errors.js";
 import { SessionTranscriptReadFenceError } from "../config/sessions/session-transcript-read-fence-error.js";
 import {
-  acceptContextDiagnosticReply,
   annotateContextFailure,
-  bindContextDiagnosticRequest,
   decodeContextDiagnostic,
   readContextDiagnostic,
   recordContextDiagnostic,
+  retainContextDiagnosticReply,
   sourceToken,
 } from "./transcript-context-diagnostic.js";
 
@@ -25,17 +24,15 @@ const anchor = {
   effectiveParentId: null,
   activeMessagePosition: 1,
 };
-const requestToken = "1".repeat(32);
 const message = "Completed-turn transcript anchor changed";
 const wire = {
   version: 1,
   reason: "transcript-index-unready",
   stage: "snapshot-anchor-validation",
   sourceToken: sourceToken(anchor),
-  requestToken,
 };
 
-it("carries only source- and request-bound domain detail and emits bounded raw log fields", () => {
+it("carries only validated source-bound domain detail and emits bounded raw log fields", () => {
   const original = annotateContextFailure(
     new SessionTranscriptReadFenceError(message),
     anchor,
@@ -44,13 +41,12 @@ it("carries only source- and request-bound domain detail and emits bounded raw l
   );
   const encoded = encodeSessionTranscriptWorkerError(original);
   expect(encoded).toMatchObject({ kind: "fence", message });
-  bindContextDiagnosticRequest(encoded, requestToken);
   const received = structuredClone(encoded);
   expect(received?.kind).toBe("fence");
   if (!received) {
     throw new Error("Missing fixture domain failure");
   }
-  acceptContextDiagnosticReply(received, requestToken);
+  retainContextDiagnosticReply(received);
   const decoded = decodeSessionTranscriptWorkerReadError(received);
   expect(decoded).toBeInstanceOf(SessionTranscriptReadFenceError);
   expect(decoded.message).toBe(message);
@@ -66,7 +62,6 @@ it("carries only source- and request-bound domain detail and emits bounded raw l
   expect(Object.keys(decoded)).not.toContain("contextDiagnostic");
   expect(JSON.stringify(write.mock.calls)).not.toContain(anchor.storePath);
   expect(JSON.stringify(write.mock.calls)).not.toContain(sourceToken(anchor));
-  expect(JSON.stringify(write.mock.calls)).not.toContain(requestToken);
   expect(() =>
     recordContextDiagnostic(decoded, anchor, "review-run", () => {
       throw new Error("synthetic logging failure");
@@ -83,14 +78,12 @@ it.each([
   { ...wire, reason: "unknown" },
   { ...wire, stage: "model-execution" },
   { ...wire, sourceToken: "not-a-source-token" },
-  { ...wire, requestToken: undefined },
-  { ...wire, requestToken: "2".repeat(32) },
   { ...wire, extra: "synthetic-private-payload" },
   Object.assign(Object.create({ inherited: true }), wire),
   { ...wire, [Symbol("extra")]: true },
 ])("leaves malformed or unrelated metadata as the same generic refusal (%j)", (detail) => {
   const failure = { kind: "fence" as const, message, contextDiagnostic: detail };
-  acceptContextDiagnosticReply(failure, requestToken);
+  retainContextDiagnosticReply(failure);
   const decoded = decodeSessionTranscriptWorkerReadError(failure);
   expect(decoded).toBeInstanceOf(SessionTranscriptReadFenceError);
   expect(decoded.message).toBe(message);
@@ -109,7 +102,7 @@ it("does not read diagnostic or source accessors and never classifies message lo
       contextDiagnostic: Object.defineProperty({ ...wire }, "reason", { get: getter }),
     },
   ]) {
-    acceptContextDiagnosticReply(failure, requestToken);
+    retainContextDiagnosticReply(failure);
     expect(
       readContextDiagnostic(decodeSessionTranscriptWorkerReadError(failure), anchor),
     ).toBeUndefined();
@@ -118,6 +111,7 @@ it("does not read diagnostic or source accessors and never classifies message lo
     sourceToken(Object.defineProperty({ ...anchor }, "generation", { get: getter })),
   ).toBeUndefined();
   expect(getter).not.toHaveBeenCalled();
+  // The held-lock path has not opted into the ordinary-pool diagnostic adapter.
   const unbound = { kind: "fence" as const, message, contextDiagnostic: wire };
   expect(
     readContextDiagnostic(decodeSessionTranscriptWorkerReadError(unbound), anchor),
@@ -135,7 +129,7 @@ it("does not read diagnostic or source accessors and never classifies message lo
     message: "Completed-turn anchor belongs to another transcript",
     contextDiagnostic: wire,
   };
-  acceptContextDiagnosticReply(ownership, requestToken);
+  retainContextDiagnosticReply(ownership);
   expect(
     readContextDiagnostic(decodeSessionTranscriptWorkerReadError(ownership), anchor),
   ).toBeUndefined();
@@ -144,7 +138,7 @@ it("does not read diagnostic or source accessors and never classifies message lo
 it("does not classify unknown envelope kinds or accessor-backed envelope messages", () => {
   for (const kind of [undefined, "unknown", "projection"]) {
     const envelope = { kind, message, contextDiagnostic: wire };
-    acceptContextDiagnosticReply(envelope, requestToken);
+    retainContextDiagnosticReply(envelope);
     const error = decodeContextDiagnostic(new SessionTranscriptReadFenceError(message), envelope);
     expect(readContextDiagnostic(error, anchor)).toBeUndefined();
   }
@@ -154,7 +148,7 @@ it("does not classify unknown envelope kinds or accessor-backed envelope message
     "message",
     { get: getter },
   );
-  acceptContextDiagnosticReply(envelope, requestToken);
+  retainContextDiagnosticReply(envelope);
   expect(getter).not.toHaveBeenCalled();
   // The pre-existing domain decoder may read message. The optional diagnostic never does.
   const error = decodeContextDiagnostic(new SessionTranscriptReadFenceError(message), envelope);

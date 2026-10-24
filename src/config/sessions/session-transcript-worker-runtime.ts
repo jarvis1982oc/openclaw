@@ -1,5 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { runWithSqliteDatabaseAdmissionTurn } from "../../infra/sqlite-database-admission-turn.js";
+import { retainContextDiagnosticReply } from "../../infra/transcript-context-diagnostic.js";
 import { WorkerTaskError } from "../../infra/worker-task-pool.js";
 import type { WorkerTaskOptions, WorkerTaskResponse } from "../../infra/worker-task-pool.types.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -7,10 +8,6 @@ import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db
 import { captureOpenClawAgentDatabaseReadValidation } from "../../state/openclaw-agent-db-validation-cache.js";
 import type { SessionBranchSummaryReadRequest } from "./session-accessor.sqlite-branches.js";
 import { readSessionActorProjectionReceipt } from "./session-actor-replica.js";
-import {
-  acceptContextDiagnosticReply,
-  createContextDiagnosticRequest,
-} from "../../infra/transcript-context-diagnostic.js";
 import { unwrapSessionTranscriptWorkerReply } from "./session-history-worker-errors.js";
 import { withSessionHistoryReadAdmission } from "./session-transcript-worker-read-admission.js";
 import {
@@ -163,7 +160,6 @@ export function retainSessionHistoryWorkerDatabase(
       timeoutMs = 60_000,
     ) => {
       let retirement: Promise<void> | undefined;
-      const contextDiagnosticRequest = createContextDiagnosticRequest();
       const hostEffects = new Set<Promise<WorkerTaskResponse>>();
       return withSessionHistoryReadAdmission(
         { ...options, ...database, lane },
@@ -202,7 +198,6 @@ export function retainSessionHistoryWorkerDatabase(
                       return {
                         ...input,
                         database,
-                        contextDiagnosticRequest,
                         validation: validation?.validation,
                         projectionReceipt: projectionReceipt && {
                           ...projectionReceipt,
@@ -247,7 +242,7 @@ export function retainSessionHistoryWorkerDatabase(
             });
             await retirement;
             if (!reply.ok) {
-              acceptContextDiagnosticReply(reply.error, contextDiagnosticRequest);
+              retainContextDiagnosticReply(reply.error);
             }
             const received =
               unwrapSessionTranscriptWorkerReply<SessionHistoryWorkerInput["kind"]>(reply);
