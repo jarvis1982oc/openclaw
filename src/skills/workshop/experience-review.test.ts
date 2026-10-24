@@ -439,11 +439,11 @@ it.each([
 );
 
 it.each(["context-preparation", "review-run"] as const)(
-  "logs the actual %s refusal before a provider is called",
+  "logs the actual %s cancellation at debug before a provider is called",
   async (phase) => {
     const logFile = path.join(state.workspaceDir, "context-diagnostic.log");
     await fs.writeFile(logFile, "");
-    setLoggerOverride({ level: "warn", consoleLevel: "silent", file: logFile });
+    setLoggerOverride({ level: "debug", consoleLevel: "silent", file: logFile });
     let wrapperEntries = 0;
     let providerCalls = 0;
     const rewrite = async () => {
@@ -473,11 +473,11 @@ it.each(["context-preparation", "review-run"] as const)(
       const error = await runSkillExperienceReview(candidate).catch((caught: unknown) => caught);
       // These assertions precede the new diagnostic assertions in the tests-only negative control.
       expect(error).toBeInstanceOf(Error);
+      // The first admission failure rethrows its original fence; only later source checks
+      // use the sticky authority error. This fixture makes no second admission attempt.
       expect(error).toMatchObject({
-        message:
-          phase === "review-run"
-            ? "source execution authority is no longer active"
-            : "Completed-turn transcript anchor changed",
+        name: "SessionTranscriptReadFenceError",
+        message: "Completed-turn transcript anchor changed",
       });
       expect(wrapperEntries).toBe(phase === "review-run" ? 1 : 0);
       expect(providerCalls).toBe(0);
@@ -488,6 +488,7 @@ it.each(["context-preparation", "review-run"] as const)(
         .split("\n")
         .filter((line) => line.includes("skill experience review context diagnostic"));
       expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('"logLevelName":"DEBUG"');
       expect(lines[0]).toContain(`"phase":"${phase}"`);
       expect(lines[0]).not.toContain("model-execution");
       expect(lines[0]).not.toContain(candidate.source.storePath);

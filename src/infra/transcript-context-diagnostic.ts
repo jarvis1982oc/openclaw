@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 
 export type ContextDiagnosticReason = "transcript-index-unready" | "anchor-mismatch";
 export type ContextDiagnosticStage =
@@ -18,12 +18,6 @@ type ContextDiagnostic = Readonly<{
 }>;
 type LogDiagnostic = Omit<ContextDiagnostic, "sourceToken"> & { phase: ContextDiagnosticPhase };
 const details = new WeakMap<object, ContextDiagnostic>();
-const reasons = new Set<string>(["transcript-index-unready", "anchor-mismatch"]);
-const stages = new Set<string>([
-  "snapshot-anchor-validation",
-  "anchor-validation",
-  "post-worker-anchor-validation",
-]);
 const phases = new Set<string>(["context-preparation", "pre-review", "review-run", "post-review"]);
 const sourceFields = [
   "agentId",
@@ -69,9 +63,7 @@ export function sourceToken(anchor: unknown): string | undefined {
       ) ||
       !["rawSeq", "activeMessagePosition"].every(
         (key) =>
-          typeof values[key] === "number" &&
-          Number.isSafeInteger(values[key]) &&
-          values[key] >= 0,
+          typeof values[key] === "number" && Number.isSafeInteger(values[key]) && values[key] >= 0,
       ) ||
       !(values.effectiveParentId === null || typeof values.effectiveParentId === "string")
     ) {
@@ -101,10 +93,10 @@ function validated(value: unknown): ContextDiagnostic | undefined {
     }
     if (
       value.version !== 1 ||
-      typeof value.reason !== "string" ||
-      !reasons.has(value.reason) ||
-      typeof value.stage !== "string" ||
-      !stages.has(value.stage) ||
+      (value.reason !== "transcript-index-unready" && value.reason !== "anchor-mismatch") ||
+      (value.stage !== "snapshot-anchor-validation" &&
+        value.stage !== "anchor-validation" &&
+        value.stage !== "post-worker-anchor-validation") ||
       typeof value.sourceToken !== "string" ||
       !/^[a-f0-9]{64}$/.test(value.sourceToken)
     ) {
@@ -112,9 +104,8 @@ function validated(value: unknown): ContextDiagnostic | undefined {
     }
     return Object.freeze({
       version: 1,
-      // SAFETY: Both bounded enum values were checked above.
-      reason: value.reason as ContextDiagnosticReason,
-      stage: value.stage as ContextDiagnosticStage,
+      reason: value.reason,
+      stage: value.stage,
       sourceToken: value.sourceToken,
     });
   } catch {
@@ -139,73 +130,24 @@ export function serializeContextDiagnostic(error: unknown): ContextDiagnostic | 
   return objectRecord(error) ? details.get(error) : undefined;
 }
 
-/** Diagnostic-only request binding; never a grant of source or execution authority. */
-export function createContextDiagnosticRequest(): string | undefined {
-  try {
-    return randomBytes(16).toString("hex");
-  } catch {
-    return undefined;
-  }
-}
-
-/** The domain worker binds already-produced detail to this request before transport. */
-export function bindContextDiagnosticRequest(envelope: unknown, requestToken?: string): void {
-  try {
-    if (!contextFenceEnvelope(envelope) || !requestToken || !/^[a-f0-9]{32}$/.test(requestToken)) {
-      return;
-    }
-    const detail = validated(Object.getOwnPropertyDescriptor(envelope, "contextDiagnostic")?.value);
-    if (detail) {
-      Object.defineProperty(envelope, "contextDiagnostic", {
-        value: { ...detail, requestToken },
-        enumerable: true,
-        configurable: true,
-        writable: true,
-      });
-    }
-  } catch {
-    // Binding failure drops diagnostic detail, not the original refusal.
-  }
-}
-
-/** Missing, stale or malformed task metadata stays an ordinary domain failure. */
-export function acceptContextDiagnosticReply(envelope: unknown, expectedToken?: string): void {
+/**
+ * Retain validated detail only after the ordinary pool has correlated its task reply.
+ * The separate held-lock execution-reader path does not opt into this adapter.
+ */
+export function retainContextDiagnosticReply(envelope: unknown): void {
   try {
     if (objectRecord(envelope)) {
       details.delete(envelope);
     }
-    if (
-      !contextFenceEnvelope(envelope) ||
-      !expectedToken ||
-      !/^[a-f0-9]{32}$/.test(expectedToken)
-    ) {
+    if (!contextFenceEnvelope(envelope)) {
       return;
     }
-    const wire = Object.getOwnPropertyDescriptor(envelope, "contextDiagnostic")?.value;
-    if (
-      !objectRecord(wire) ||
-      Object.getPrototypeOf(wire) !== Object.prototype ||
-      Reflect.ownKeys(wire).some((key) => typeof key !== "string") ||
-      Object.getOwnPropertyNames(wire).toSorted().join(",") !==
-        "reason,requestToken,sourceToken,stage,version" ||
-      Object.values(Object.getOwnPropertyDescriptors(wire)).some(
-        (descriptor) => !Object.hasOwn(descriptor, "value"),
-      ) ||
-      wire.requestToken !== expectedToken
-    ) {
-      return;
-    }
-    const detail = validated({
-      version: wire.version,
-      reason: wire.reason,
-      stage: wire.stage,
-      sourceToken: wire.sourceToken,
-    });
+    const detail = validated(Object.getOwnPropertyDescriptor(envelope, "contextDiagnostic")?.value);
     if (detail) {
       details.set(envelope, detail);
     }
   } catch {
-    // Accessors and malformed payloads never replace the original refusal.
+    // Optional malformed metadata never replaces the original refusal.
   }
 }
 
@@ -229,14 +171,15 @@ export function readContextDiagnostic(
   try {
     const expectedSource = sourceToken(anchor);
     const seen = new Set<object>();
+    let current = error;
     // Prepared admission preserves its refusal as cause; do not infer from wrapper text.
-    for (let depth = 0; depth < 8 && objectRecord(error) && !seen.has(error); depth++) {
-      seen.add(error);
-      const detail = details.get(error);
+    for (let depth = 0; depth < 8 && objectRecord(current) && !seen.has(current); depth++) {
+      seen.add(current);
+      const detail = details.get(current);
       if (detail) {
         return detail.sourceToken === expectedSource ? detail : undefined;
       }
-      error = Object.getOwnPropertyDescriptor(error, "cause")?.value;
+      current = Object.getOwnPropertyDescriptor(current, "cause")?.value;
     }
   } catch {
     // Opaque errors and cause accessors carry no diagnostic evidence.
