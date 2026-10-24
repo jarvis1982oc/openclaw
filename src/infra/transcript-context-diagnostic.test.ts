@@ -173,9 +173,22 @@ it("reads only privately retained detail through bounded admission causes", () =
   const cycle = new Error("cycle");
   cycle.cause = cycle;
   expect(readContextDiagnostic(cycle, anchor)).toBeUndefined();
-  let tooDeep: Error = refusal;
-  for (let depth = 0; depth < 8; depth++) {
-    tooDeep = new Error("wrapper", { cause: tooDeep });
+  let deepestAccepted: Error = refusal;
+  for (let depth = 0; depth < 7; depth++) {
+    deepestAccepted = new Error("wrapper", { cause: deepestAccepted });
   }
-  expect(readContextDiagnostic(tooDeep, anchor)).toBeUndefined();
+  expect(readContextDiagnostic(deepestAccepted, anchor)?.reason).toBe("anchor-mismatch");
+  expect(
+    readContextDiagnostic(new Error("wrapper", { cause: deepestAccepted }), anchor),
+  ).toBeUndefined();
+  const otherSource = annotateContextFailure(
+    new Error(message, { cause: refusal }),
+    { ...anchor, sessionId: "other" },
+    "transcript-index-unready",
+    "snapshot-anchor-validation",
+  );
+  expect(readContextDiagnostic(otherSource, anchor)).toBeUndefined();
+  expect(readContextDiagnostic(otherSource, { ...anchor, sessionId: "other" })?.reason).toBe(
+    "transcript-index-unready",
+  );
 });

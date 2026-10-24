@@ -1,4 +1,4 @@
-import { sql } from "kysely";
+import { sql, type InferResult } from "kysely";
 import { executeSqliteQueryTakeFirstSync } from "../../infra/kysely-sync.js";
 import { isPostgresSqlConnection } from "../../infra/sql-connection.js";
 import { getSqliteReadScopeRevision } from "../../infra/sqlite-schema-facts.js";
@@ -206,43 +206,42 @@ function readActiveTranscriptEntryFacts(
       return undefined;
     }
   }
-  if (params.onIndexUnready && !projection) {
-    // Keep readiness even when the identity row is absent, in the same statement as the anchor.
-    // This is the existing readiness predicate, not a second diagnostic read or a retry.
-    const row = executeSqliteQueryTakeFirstSync(
-      params.database.db,
-      getSessionKysely(params.database.db)
-        .selectFrom(
-          selectSessionTranscriptIndexStatus(params.database.db, params.resolved.sessionId).as(
-            "status",
-          ),
-        )
-        .leftJoin(selectTranscriptAnchorIdentity(params).as("anchor"), (join) => join.onTrue())
-        .leftJoin("transcript_rewrite_watermarks as rewrite", (join) =>
-          join.on("rewrite.session_id", "=", params.resolved.sessionId),
-        )
-        .selectAll("anchor")
-        .select(["rewrite.generation", "status.latestSeq", "status.needs_reconcile"]),
-    );
-    if (row?.needs_reconcile) {
-      params.onIndexUnready();
+  // Keep readiness even when the identity row is absent, in the same statement as the anchor.
+  // Both selections execute through this reader's existing single-statement owner.
+  const query =
+    params.onIndexUnready && !projection
+      ? getSessionKysely(params.database.db)
+          .selectFrom(
+            selectSessionTranscriptIndexStatus(params.database.db, params.resolved.sessionId).as(
+              "status",
+            ),
+          )
+          .leftJoin(selectTranscriptAnchorIdentity(params).as("anchor"), (join) => join.onTrue())
+          .leftJoin("transcript_rewrite_watermarks as rewrite", (join) =>
+            join.on("rewrite.session_id", "=", params.resolved.sessionId),
+          )
+          .selectAll("anchor")
+          .select(["rewrite.generation", "status.latestSeq", "status.needs_reconcile"])
+      : selectActiveTranscriptEntryAnchor(params, projection, includeVersion);
+  const row = executeSqliteQueryTakeFirstSync<InferResult<typeof query>[number]>(
+    params.database.db,
+    query,
+  );
+  if (!row) {
+    return undefined;
+  }
+  if ("needs_reconcile" in row) {
+    if (row.needs_reconcile) {
+      params.onIndexUnready?.();
       return undefined;
     }
-    return row && row.seq !== null
-      ? { ...row, seq: row.seq, transcriptUpdatedAt: undefined }
-      : undefined;
+    return row.seq !== null ? { ...row, seq: row.seq, transcriptUpdatedAt: undefined } : undefined;
   }
-  const row = executeSqliteQueryTakeFirstSync(
-    params.database.db,
-    selectActiveTranscriptEntryAnchor(params, projection, includeVersion),
-  );
-  return row
-    ? {
-        ...row,
-        generation: (projection ? projection.generation : row.generation) ?? null,
-        latestSeq: projection ? projection.state.indexedSeq : row.latestSeq,
-      }
-    : undefined;
+  return {
+    ...row,
+    generation: (projection ? projection.generation : row.generation) ?? null,
+    latestSeq: projection ? projection.state.indexedSeq : row.latestSeq,
+  };
 }
 
 function selectTranscriptAnchorIdentity(params: TranscriptEntryRead) {

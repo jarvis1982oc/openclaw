@@ -18,12 +18,6 @@ type ContextDiagnostic = Readonly<{
 }>;
 type LogDiagnostic = Omit<ContextDiagnostic, "sourceToken"> & { phase: ContextDiagnosticPhase };
 const details = new WeakMap<object, ContextDiagnostic>();
-const reasons = new Set<string>(["transcript-index-unready", "anchor-mismatch"]);
-const stages = new Set<string>([
-  "snapshot-anchor-validation",
-  "anchor-validation",
-  "post-worker-anchor-validation",
-]);
 const phases = new Set<string>(["context-preparation", "pre-review", "review-run", "post-review"]);
 const sourceFields = [
   "agentId",
@@ -69,9 +63,7 @@ export function sourceToken(anchor: unknown): string | undefined {
       ) ||
       !["rawSeq", "activeMessagePosition"].every(
         (key) =>
-          typeof values[key] === "number" &&
-          Number.isSafeInteger(values[key]) &&
-          values[key] >= 0,
+          typeof values[key] === "number" && Number.isSafeInteger(values[key]) && values[key] >= 0,
       ) ||
       !(values.effectiveParentId === null || typeof values.effectiveParentId === "string")
     ) {
@@ -101,10 +93,10 @@ function validated(value: unknown): ContextDiagnostic | undefined {
     }
     if (
       value.version !== 1 ||
-      typeof value.reason !== "string" ||
-      !reasons.has(value.reason) ||
-      typeof value.stage !== "string" ||
-      !stages.has(value.stage) ||
+      (value.reason !== "transcript-index-unready" && value.reason !== "anchor-mismatch") ||
+      (value.stage !== "snapshot-anchor-validation" &&
+        value.stage !== "anchor-validation" &&
+        value.stage !== "post-worker-anchor-validation") ||
       typeof value.sourceToken !== "string" ||
       !/^[a-f0-9]{64}$/.test(value.sourceToken)
     ) {
@@ -112,9 +104,8 @@ function validated(value: unknown): ContextDiagnostic | undefined {
     }
     return Object.freeze({
       version: 1,
-      // SAFETY: Both bounded enum values were checked above.
-      reason: value.reason as ContextDiagnosticReason,
-      stage: value.stage as ContextDiagnosticStage,
+      reason: value.reason,
+      stage: value.stage,
       sourceToken: value.sourceToken,
     });
   } catch {
@@ -180,14 +171,15 @@ export function readContextDiagnostic(
   try {
     const expectedSource = sourceToken(anchor);
     const seen = new Set<object>();
+    let current = error;
     // Prepared admission preserves its refusal as cause; do not infer from wrapper text.
-    for (let depth = 0; depth < 8 && objectRecord(error) && !seen.has(error); depth++) {
-      seen.add(error);
-      const detail = details.get(error);
+    for (let depth = 0; depth < 8 && objectRecord(current) && !seen.has(current); depth++) {
+      seen.add(current);
+      const detail = details.get(current);
       if (detail) {
         return detail.sourceToken === expectedSource ? detail : undefined;
       }
-      error = Object.getOwnPropertyDescriptor(error, "cause")?.value;
+      current = Object.getOwnPropertyDescriptor(current, "cause")?.value;
     }
   } catch {
     // Opaque errors and cause accessors carry no diagnostic evidence.

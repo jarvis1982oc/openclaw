@@ -6,11 +6,11 @@ import { getDatabaseEngineSelection } from "../../infra/database-engine/context.
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import { runWithSqliteDatabaseAdmissionTurn } from "../../infra/sqlite-database-admission-turn.js";
+import { retainContextDiagnosticReply } from "../../infra/transcript-context-diagnostic.js";
 import {
   resolveWorkerPoolSize,
   SESSION_TRANSCRIPT_FOREGROUND_WORKERS,
 } from "../../infra/worker-pool-sizing.js";
-import { retainContextDiagnosticReply } from "../../infra/transcript-context-diagnostic.js";
 import { WorkerTaskPool } from "../../infra/worker-task-pool.js";
 import type { WorkerTaskOptions } from "../../infra/worker-task-pool.types.js";
 import type { readSessionTranscriptModelContext } from "./session-accessor.sqlite-model-context.js";

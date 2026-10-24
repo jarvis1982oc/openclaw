@@ -191,7 +191,8 @@ it("classifies the hot actor anchor refusal but not ownership or authority failu
   expect(readContextDiagnostic(ownership, through)).toBeUndefined();
   const authority = capture({ through, expectedAuthority: { permissionMode: "read-only" } });
   expect(authority).toMatchObject({
-    message: "Session transcript source was deleted, replaced, or changed lifecycle or permissions.",
+    message:
+      "Session transcript source was deleted, replaced, or changed lifecycle or permissions.",
   });
   expect(readContextDiagnostic(authority, through)).toBeUndefined();
 });

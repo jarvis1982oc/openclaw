@@ -15,6 +15,7 @@ import { resolveDefaultSessionStorePath } from "../../config/sessions/paths.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { loadSessionEntryForAdmission } from "../../config/sessions/session-accessor.sqlite-entry-admission.js";
 import { readTranscriptEventRows } from "../../config/sessions/session-accessor.sqlite-read.js";
+import { assertSessionTranscriptContextAnchorInDatabase } from "../../config/sessions/session-accessor.sqlite-transcript-anchor.js";
 import { rewriteSqliteTranscriptEventRowsInTransaction } from "../../config/sessions/session-accessor.sqlite-transcript-store.js";
 import type { SessionActor } from "../../config/sessions/session-actor-contract.js";
 import { createSessionActorFactory } from "../../config/sessions/session-actor-durable.js";
@@ -36,6 +37,7 @@ import {
   onInternalDiagnosticEvent,
   waitForDiagnosticEventsDrained,
 } from "../../infra/diagnostic-events.js";
+import * as kyselySync from "../../infra/kysely-sync.js";
 import { openNodeSqliteDatabase } from "../../infra/node-sqlite.js";
 import { admitSqliteSchema } from "../../infra/sqlite-schema-facts.js";
 import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
@@ -840,6 +842,7 @@ it.each([
       userMessage("original", 1),
     );
     assert(terminal.anchor, "Missing synthetic completed-turn anchor");
+    const through = terminal.anchor;
     expect(typeof terminal.anchor.generation).toBe("string");
     await waitForSessionTranscriptProjection(scope);
     if (!scenario.sql) {
@@ -857,6 +860,19 @@ it.each([
       } finally {
         fixture.close();
       }
+    }
+    const database = openOpenClawAgentDatabase({ agentId: scope.agentId, path: scope.storePath });
+    const query = vi.spyOn(kyselySync, "executeSqliteQueryTakeFirstSync");
+    try {
+      withRestoredMocks([query], () => {
+        // Pass through the real reader: classification must share its existing statement.
+        expect(() =>
+          assertSessionTranscriptContextAnchorInDatabase(database, scope, through),
+        ).toThrow("Completed-turn transcript anchor changed");
+        expect(query).toHaveBeenCalledOnce();
+      });
+    } finally {
+      await closeOpenClawAgentDatabaseByPathAsync(scope.storePath, scope.agentId);
     }
     const error = await contextWorker
       .readSessionTranscriptModelContextInWorker(scope, undefined, undefined, terminal.anchor)

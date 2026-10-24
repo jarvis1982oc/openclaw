@@ -473,11 +473,11 @@ it.each(["context-preparation", "review-run"] as const)(
       const error = await runSkillExperienceReview(candidate).catch((caught: unknown) => caught);
       // These assertions precede the new diagnostic assertions in the tests-only negative control.
       expect(error).toBeInstanceOf(Error);
+      // The first admission failure rethrows its original fence; only later source checks
+      // use the sticky authority error. This fixture makes no second admission attempt.
       expect(error).toMatchObject({
-        message:
-          phase === "review-run"
-            ? "source execution authority is no longer active"
-            : "Completed-turn transcript anchor changed",
+        name: "SessionTranscriptReadFenceError",
+        message: "Completed-turn transcript anchor changed",
       });
       expect(wrapperEntries).toBe(phase === "review-run" ? 1 : 0);
       expect(providerCalls).toBe(0);
