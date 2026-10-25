@@ -1250,6 +1250,7 @@ src/infra/tcp-port.ts
 src/infra/temp-artifact-cleanup.ts
 src/infra/test-runtime-env.ts
 src/infra/tmp-openclaw-dir.ts
+src/infra/transcript-context-diagnostic.ts
 src/infra/update-channels.ts
 src/infra/update-database-generations.ts
 src/infra/update-doctor-config-schema.ts

@@ -1,4 +1,4 @@
-import { sql, type InferResult } from "kysely";
+import { sql, type Compilable, type InferResult } from "kysely";
 import { executeSqliteQueryTakeFirstSync } from "../../infra/kysely-sync.js";
 import { isPostgresSqlConnection } from "../../infra/sql-connection.js";
 import { getSqliteReadScopeRevision } from "../../infra/sqlite-schema-facts.js";
@@ -223,10 +223,8 @@ function readActiveTranscriptEntryFacts(
           .selectAll("anchor")
           .select(["rewrite.generation", "status.latestSeq", "status.needs_reconcile"])
       : selectActiveTranscriptEntryAnchor(params, projection, includeVersion);
-  const row = executeSqliteQueryTakeFirstSync<InferResult<typeof query>[number]>(
-    params.database.db,
-    query,
-  );
+  const selectedQuery: Compilable<InferResult<typeof query>[number]> = query;
+  const row = executeSqliteQueryTakeFirstSync(params.database.db, selectedQuery);
   if (!row) {
     return undefined;
   }
