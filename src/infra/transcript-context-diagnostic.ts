@@ -45,7 +45,7 @@ function contextFenceEnvelope(value: unknown): value is Record<string, unknown> 
 }
 
 /** Opaque original-source binding, never a log field or execution authority. */
-export function sourceToken(anchor: unknown): string | undefined {
+function sourceToken(anchor: unknown): string | undefined {
   try {
     if (!objectRecord(anchor)) {
       return undefined;
@@ -164,10 +164,7 @@ export function decodeContextDiagnostic<T extends Error>(error: T, envelope: unk
   return error;
 }
 
-export function readContextDiagnostic(
-  error: unknown,
-  anchor: unknown,
-): ContextDiagnostic | undefined {
+function readContextDiagnostic(error: unknown, anchor: unknown): ContextDiagnostic | undefined {
   try {
     const expectedSource = sourceToken(anchor);
     const seen = new Set<object>();
