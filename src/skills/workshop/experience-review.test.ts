@@ -28,7 +28,10 @@ import {
 } from "../../infra/diagnostic-events.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { readSqliteDatabaseScopedWriteTokensForPath } from "../../infra/sqlite-database-admission.js";
-import { readContextDiagnostic, sourceToken } from "../../infra/transcript-context-diagnostic.js";
+import {
+  recordContextDiagnostic,
+  serializeContextDiagnostic,
+} from "../../infra/transcript-context-diagnostic.js";
 import { resetLogger, setLoggerOverride } from "../../logging/logger.js";
 import { testApi as loggerTestApi } from "../../logging/logger.test-support.js";
 import { runBeforeAgentReplyForTurn } from "../../plugins/before-agent-reply.js";
@@ -482,7 +485,21 @@ it.each(["context-preparation", "review-run"] as const)(
       expect(wrapperEntries).toBe(phase === "review-run" ? 1 : 0);
       expect(providerCalls).toBe(0);
       expect(mocks.runSkillWorkshopReview).toHaveBeenCalledTimes(phase === "review-run" ? 1 : 0);
-      expect(readContextDiagnostic(error, candidate.source)?.reason).toBe("anchor-mismatch");
+      const observe = vi.fn();
+      recordContextDiagnostic(error, candidate.source, phase, observe);
+      expect(observe).toHaveBeenCalledOnce();
+      expect(observe).toHaveBeenCalledWith({
+        version: 1,
+        reason: "anchor-mismatch",
+        stage: phase === "context-preparation" ? "snapshot-anchor-validation" : "anchor-validation",
+        phase,
+      });
+      const token = expectDefined(
+        serializeContextDiagnostic(error)?.sourceToken,
+        "serialized context diagnostic source token",
+      );
+      expect(token).toMatch(/^[a-f0-9]{64}$/);
+      // Only the raw log establishes which phase the production review observed.
       await loggerTestApi.flushFileLogQueueForTests();
       const lines = (await fs.readFile(logFile, "utf8"))
         .split("\n")
@@ -493,7 +510,7 @@ it.each(["context-preparation", "review-run"] as const)(
       expect(lines[0]).not.toContain("model-execution");
       expect(lines[0]).not.toContain(candidate.source.storePath);
       expect(lines[0]).not.toContain(candidate.source.sessionId);
-      expect(lines[0]).not.toContain(sourceToken(candidate.source));
+      expect(lines[0]).not.toContain(token);
     } finally {
       await loggerTestApi.flushFileLogQueueForTests();
       setLoggerOverride(null);

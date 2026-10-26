@@ -7,10 +7,9 @@ import { SessionTranscriptReadFenceError } from "../config/sessions/session-tran
 import {
   annotateContextFailure,
   decodeContextDiagnostic,
-  readContextDiagnostic,
   recordContextDiagnostic,
   retainContextDiagnosticReply,
-  sourceToken,
+  serializeContextDiagnostic,
 } from "./transcript-context-diagnostic.js";
 
 const anchor = {
@@ -25,12 +24,14 @@ const anchor = {
   activeMessagePosition: 1,
 };
 const message = "Completed-turn transcript anchor changed";
-const wire = {
-  version: 1,
-  reason: "transcript-index-unready",
-  stage: "snapshot-anchor-validation",
-  sourceToken: sourceToken(anchor),
-};
+const wire = serializeContextDiagnostic(
+  annotateContextFailure(
+    new SessionTranscriptReadFenceError(message),
+    anchor,
+    "transcript-index-unready",
+    "snapshot-anchor-validation",
+  ),
+);
 
 it("carries only validated source-bound domain detail and emits bounded raw log fields", () => {
   const original = annotateContextFailure(
@@ -50,7 +51,14 @@ it("carries only validated source-bound domain detail and emits bounded raw log 
   const decoded = decodeSessionTranscriptWorkerReadError(received);
   expect(decoded).toBeInstanceOf(SessionTranscriptReadFenceError);
   expect(decoded.message).toBe(message);
-  expect(readContextDiagnostic(decoded, { ...anchor, generation: "other" })).toBeUndefined();
+  const rejected = vi.fn();
+  recordContextDiagnostic(
+    decoded,
+    { ...anchor, generation: "other" },
+    "context-preparation",
+    rejected,
+  );
+  expect(rejected).not.toHaveBeenCalled();
   const write = vi.fn();
   recordContextDiagnostic(decoded, anchor, "context-preparation", write);
   expect(write).toHaveBeenCalledExactlyOnceWith({
@@ -61,12 +69,26 @@ it("carries only validated source-bound domain detail and emits bounded raw log 
   });
   expect(Object.keys(decoded)).not.toContain("contextDiagnostic");
   expect(JSON.stringify(write.mock.calls)).not.toContain(anchor.storePath);
-  expect(JSON.stringify(write.mock.calls)).not.toContain(sourceToken(anchor));
-  expect(() =>
-    recordContextDiagnostic(decoded, anchor, "review-run", () => {
-      throw new Error("synthetic logging failure");
-    }),
-  ).not.toThrow();
+  const token = serializeContextDiagnostic(decoded)?.sourceToken;
+  expect(token).toBeDefined();
+  expect(token).toMatch(/^[a-f0-9]{64}$/);
+  expect(wire).toEqual({
+    version: 1,
+    reason: "transcript-index-unready",
+    stage: "snapshot-anchor-validation",
+    sourceToken: token,
+  });
+  expect(JSON.stringify(write.mock.calls)).not.toContain(token);
+  const failingWrite = vi.fn(() => {
+    throw new Error("synthetic logging failure");
+  });
+  expect(() => recordContextDiagnostic(decoded, anchor, "review-run", failingWrite)).not.toThrow();
+  expect(failingWrite).toHaveBeenCalledExactlyOnceWith({
+    version: 1,
+    reason: "transcript-index-unready",
+    stage: "snapshot-anchor-validation",
+    phase: "review-run",
+  });
   expect(decoded.message).toBe(message);
 });
 
@@ -87,11 +109,14 @@ it.each([
   const decoded = decodeSessionTranscriptWorkerReadError(failure);
   expect(decoded).toBeInstanceOf(SessionTranscriptReadFenceError);
   expect(decoded.message).toBe(message);
-  expect(readContextDiagnostic(decoded, anchor)).toBeUndefined();
+  const write = vi.fn();
+  recordContextDiagnostic(decoded, anchor, "context-preparation", write);
+  expect(write).not.toHaveBeenCalled();
 });
 
 it("does not read diagnostic or source accessors and never classifies message lookalikes", () => {
   const getter = vi.fn(() => wire);
+  const write = vi.fn();
   for (const failure of [
     Object.defineProperty({ kind: "fence" as const, message }, "contextDiagnostic", {
       get: getter,
@@ -103,26 +128,41 @@ it("does not read diagnostic or source accessors and never classifies message lo
     },
   ]) {
     retainContextDiagnosticReply(failure);
-    expect(
-      readContextDiagnostic(decodeSessionTranscriptWorkerReadError(failure), anchor),
-    ).toBeUndefined();
+    recordContextDiagnostic(
+      decodeSessionTranscriptWorkerReadError(failure),
+      anchor,
+      "context-preparation",
+      write,
+    );
+    expect(write).not.toHaveBeenCalled();
   }
-  expect(
-    sourceToken(Object.defineProperty({ ...anchor }, "generation", { get: getter })),
-  ).toBeUndefined();
+  const sourceAccessor = Object.defineProperty({ ...anchor }, "generation", { get: getter });
+  const sourceFailure = annotateContextFailure(
+    new SessionTranscriptReadFenceError(message),
+    sourceAccessor,
+    "transcript-index-unready",
+    "snapshot-anchor-validation",
+  );
+  recordContextDiagnostic(sourceFailure, anchor, "context-preparation", write);
+  expect(write).not.toHaveBeenCalled();
   expect(getter).not.toHaveBeenCalled();
   // The held-lock path has not opted into the ordinary-pool diagnostic adapter.
   const unbound = { kind: "fence" as const, message, contextDiagnostic: wire };
-  expect(
-    readContextDiagnostic(decodeSessionTranscriptWorkerReadError(unbound), anchor),
-  ).toBeUndefined();
+  recordContextDiagnostic(
+    decodeSessionTranscriptWorkerReadError(unbound),
+    anchor,
+    "context-preparation",
+    write,
+  );
+  expect(write).not.toHaveBeenCalled();
   for (const other of [
     new Error(message),
     new SessionTranscriptReadFenceError(message),
     new Error("worker task timed out"),
     new Error("worker exited"),
   ]) {
-    expect(readContextDiagnostic(other, anchor)).toBeUndefined();
+    recordContextDiagnostic(other, anchor, "context-preparation", write);
+    expect(write).not.toHaveBeenCalled();
   }
   const ownership = {
     kind: "fence" as const,
@@ -130,17 +170,23 @@ it("does not read diagnostic or source accessors and never classifies message lo
     contextDiagnostic: wire,
   };
   retainContextDiagnosticReply(ownership);
-  expect(
-    readContextDiagnostic(decodeSessionTranscriptWorkerReadError(ownership), anchor),
-  ).toBeUndefined();
+  recordContextDiagnostic(
+    decodeSessionTranscriptWorkerReadError(ownership),
+    anchor,
+    "context-preparation",
+    write,
+  );
+  expect(write).not.toHaveBeenCalled();
 });
 
 it("does not classify unknown envelope kinds or accessor-backed envelope messages", () => {
+  const write = vi.fn();
   for (const kind of [undefined, "unknown", "projection"]) {
     const envelope = { kind, message, contextDiagnostic: wire };
     retainContextDiagnosticReply(envelope);
     const error = decodeContextDiagnostic(new SessionTranscriptReadFenceError(message), envelope);
-    expect(readContextDiagnostic(error, anchor)).toBeUndefined();
+    recordContextDiagnostic(error, anchor, "context-preparation", write);
+    expect(write).not.toHaveBeenCalled();
   }
   const getter = vi.fn(() => message);
   const envelope = Object.defineProperty(
@@ -153,7 +199,8 @@ it("does not classify unknown envelope kinds or accessor-backed envelope message
   // The pre-existing domain decoder may read message. The optional diagnostic never does.
   const error = decodeContextDiagnostic(new SessionTranscriptReadFenceError(message), envelope);
   expect(getter).not.toHaveBeenCalled();
-  expect(readContextDiagnostic(error, anchor)).toBeUndefined();
+  recordContextDiagnostic(error, anchor, "context-preparation", write);
+  expect(write).not.toHaveBeenCalled();
 });
 
 it("reads only privately retained detail through bounded admission causes", () => {
@@ -164,31 +211,54 @@ it("reads only privately retained detail through bounded admission causes", () =
     "anchor-validation",
   );
   const wrapped = new Error("source execution authority is no longer active", { cause: refusal });
-  expect(readContextDiagnostic(wrapped, anchor)?.reason).toBe("anchor-mismatch");
-  expect(readContextDiagnostic(wrapped, { ...anchor, sessionId: "other" })).toBeUndefined();
+  const write = vi.fn();
+  const expected = {
+    version: 1,
+    reason: "anchor-mismatch",
+    stage: "anchor-validation",
+    phase: "review-run",
+  };
+  recordContextDiagnostic(wrapped, anchor, "review-run", write);
+  expect(write).toHaveBeenCalledExactlyOnceWith(expected);
+  write.mockClear();
+  recordContextDiagnostic(wrapped, { ...anchor, sessionId: "other" }, "review-run", write);
+  expect(write).not.toHaveBeenCalled();
   const getter = vi.fn(() => refusal);
   const accessor = Object.defineProperty(new Error("wrapper"), "cause", { get: getter });
-  expect(readContextDiagnostic(accessor, anchor)).toBeUndefined();
+  recordContextDiagnostic(accessor, anchor, "review-run", write);
+  expect(write).not.toHaveBeenCalled();
   expect(getter).not.toHaveBeenCalled();
   const cycle = new Error("cycle");
   cycle.cause = cycle;
-  expect(readContextDiagnostic(cycle, anchor)).toBeUndefined();
+  recordContextDiagnostic(cycle, anchor, "review-run", write);
+  expect(write).not.toHaveBeenCalled();
   let deepestAccepted: Error = refusal;
   for (let depth = 0; depth < 7; depth++) {
     deepestAccepted = new Error("wrapper", { cause: deepestAccepted });
   }
-  expect(readContextDiagnostic(deepestAccepted, anchor)?.reason).toBe("anchor-mismatch");
-  expect(
-    readContextDiagnostic(new Error("wrapper", { cause: deepestAccepted }), anchor),
-  ).toBeUndefined();
+  recordContextDiagnostic(deepestAccepted, anchor, "review-run", write);
+  expect(write).toHaveBeenCalledExactlyOnceWith(expected);
+  write.mockClear();
+  recordContextDiagnostic(
+    new Error("wrapper", { cause: deepestAccepted }),
+    anchor,
+    "review-run",
+    write,
+  );
+  expect(write).not.toHaveBeenCalled();
   const otherSource = annotateContextFailure(
     new Error(message, { cause: refusal }),
     { ...anchor, sessionId: "other" },
     "transcript-index-unready",
     "snapshot-anchor-validation",
   );
-  expect(readContextDiagnostic(otherSource, anchor)).toBeUndefined();
-  expect(readContextDiagnostic(otherSource, { ...anchor, sessionId: "other" })?.reason).toBe(
-    "transcript-index-unready",
-  );
+  recordContextDiagnostic(otherSource, anchor, "review-run", write);
+  expect(write).not.toHaveBeenCalled();
+  recordContextDiagnostic(otherSource, { ...anchor, sessionId: "other" }, "review-run", write);
+  expect(write).toHaveBeenCalledExactlyOnceWith({
+    version: 1,
+    reason: "transcript-index-unready",
+    stage: "snapshot-anchor-validation",
+    phase: "review-run",
+  });
 });

@@ -41,7 +41,7 @@ import * as kyselySync from "../../infra/kysely-sync.js";
 import { openNodeSqliteDatabase } from "../../infra/node-sqlite.js";
 import { admitSqliteSchema } from "../../infra/sqlite-schema-facts.js";
 import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
-import { readContextDiagnostic } from "../../infra/transcript-context-diagnostic.js";
+import { recordContextDiagnostic } from "../../infra/transcript-context-diagnostic.js";
 import { withPluginRuntimePluginScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import {
@@ -798,9 +798,17 @@ it.each(["append", "rewrite"] as const)(
           const error = await pending.catch((caught: unknown) => caught);
           expect(error).toBeInstanceOf(Error);
           expect(error).toMatchObject({ message: "Completed-turn transcript anchor changed" });
-          expect(readContextDiagnostic(error, terminal.anchor)?.stage).toBe(
-            "post-worker-anchor-validation",
-          );
+          const diagnostic = vi.fn();
+          recordContextDiagnostic(error, terminal.anchor, "context-preparation", diagnostic);
+          expect(diagnostic).toHaveBeenCalledOnce();
+          expect(diagnostic.mock.calls[0]).toStrictEqual([
+            {
+              version: 1,
+              reason: expect.stringMatching(/^(anchor-mismatch|transcript-index-unready)$/),
+              stage: "post-worker-anchor-validation",
+              phase: "context-preparation",
+            },
+          ]);
         } else {
           const context = (await pending).buildSessionContext();
           expect(context).toEqual(expected);
@@ -879,12 +887,24 @@ it.each([
       .catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(Error);
     expect(error).toMatchObject({ message: "Completed-turn transcript anchor changed" });
-    expect(readContextDiagnostic(error, terminal.anchor)).toMatchObject({
-      reason: scenario.reason,
-      stage: "snapshot-anchor-validation",
-    });
-    expect(
-      readContextDiagnostic(error, { ...terminal.anchor, sessionId: "other" }),
-    ).toBeUndefined();
+    const diagnostic = vi.fn();
+    recordContextDiagnostic(error, terminal.anchor, "context-preparation", diagnostic);
+    expect(diagnostic).toHaveBeenCalledOnce();
+    expect(diagnostic.mock.calls[0]).toStrictEqual([
+      {
+        version: 1,
+        reason: scenario.reason,
+        stage: "snapshot-anchor-validation",
+        phase: "context-preparation",
+      },
+    ]);
+    const unrelatedDiagnostic = vi.fn();
+    recordContextDiagnostic(
+      error,
+      { ...terminal.anchor, sessionId: "other" },
+      "context-preparation",
+      unrelatedDiagnostic,
+    );
+    expect(unrelatedDiagnostic).not.toHaveBeenCalled();
   });
 });

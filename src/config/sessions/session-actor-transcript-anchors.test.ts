@@ -1,5 +1,5 @@
-import { expect, it } from "vitest";
-import { readContextDiagnostic } from "../../infra/transcript-context-diagnostic.js";
+import { expect, it, vi } from "vitest";
+import { recordContextDiagnostic } from "../../infra/transcript-context-diagnostic.js";
 import { createMemoryTestState } from "./session-actor-memory-publication.test-support.js";
 import { readSessionActorTranscriptAnchors } from "./session-actor-transcript-anchors.js";
 import { SessionTranscriptReadFenceError } from "./session-transcript-read-fence-error.js";
@@ -180,19 +180,30 @@ it("classifies the hot actor anchor refusal but not ownership or authority failu
   const error = capture({ through });
   expect(error).toBeInstanceOf(SessionTranscriptReadFenceError);
   expect(error).toMatchObject({ message: "Completed-turn transcript anchor changed" });
-  expect(readContextDiagnostic(error, through)).toMatchObject({
-    reason: "anchor-mismatch",
-    stage: "anchor-validation",
-  });
+  const diagnostic = vi.fn();
+  recordContextDiagnostic(error, through, "context-preparation", diagnostic);
+  expect(diagnostic).toHaveBeenCalledOnce();
+  expect(diagnostic.mock.calls[0]).toStrictEqual([
+    {
+      version: 1,
+      reason: "anchor-mismatch",
+      stage: "anchor-validation",
+      phase: "context-preparation",
+    },
+  ]);
   const ownership = capture({ through: { ...through, sessionId: "other" } });
   expect(ownership).toMatchObject({
     message: "Completed-turn anchor belongs to another transcript",
   });
-  expect(readContextDiagnostic(ownership, through)).toBeUndefined();
+  const ownershipDiagnostic = vi.fn();
+  recordContextDiagnostic(ownership, through, "context-preparation", ownershipDiagnostic);
+  expect(ownershipDiagnostic).not.toHaveBeenCalled();
   const authority = capture({ through, expectedAuthority: { permissionMode: "read-only" } });
   expect(authority).toMatchObject({
     message:
       "Session transcript source was deleted, replaced, or changed lifecycle or permissions.",
   });
-  expect(readContextDiagnostic(authority, through)).toBeUndefined();
+  const authorityDiagnostic = vi.fn();
+  recordContextDiagnostic(authority, through, "context-preparation", authorityDiagnostic);
+  expect(authorityDiagnostic).not.toHaveBeenCalled();
 });
